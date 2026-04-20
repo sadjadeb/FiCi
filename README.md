@@ -67,8 +67,8 @@ See [`example.py`](./example.py) for a complete programmatic usage example.
 The pipeline has four phases, each exposed as a standalone class:
 
 1. **Extraction** (`ReferenceExtractor`): PyMuPDF pulls text, heuristics locate the *References* / *Bibliography* section, and regex splitters handle the dominant reference styles (`[1] ...`, `1. ...`, Author-Year).
-2. **Structuring + Search (primary)** (`CitationSearcher`): each raw citation is sent to the [OpenAlex](https://docs.openalex.org/) `/works` endpoint as a free-text query, using the polite pool via `mailto`.
-3. **Search (fallback)**: if OpenAlex returns nothing or errors, FiCi falls back to Crossref's `query.bibliographic` parameter.
+2. **Structuring + Search (primary)** (`CitationSearcher.search_openalex`): each raw citation is sent to the [OpenAlex](https://docs.openalex.org/) `/works` endpoint as a free-text query (title only, for precision), using the polite pool via `mailto`. The hits are then handed to the verifier.
+3. **Search (second opinion)** (`CitationSearcher.search_crossref`): whenever the OpenAlex-based verdict is anything other than `Verified` (suspicious match, no match, or error), FiCi also queries Crossref's `query.bibliographic` endpoint and verifies its hits. The pipeline returns whichever of the two reports is stronger — `Verified` always beats other verdicts, and within the same tier the higher score wins. If OpenAlex verifies on the first try, Crossref is skipped to save latency.
 4. **Verification** (`CitationVerifier`): `rapidfuzz.fuzz.token_sort_ratio` compares the API-returned title to the suspected title in the raw string, with a small bonus for corroborating author surnames. The pipeline emits one of four verdicts:
 
    | Verdict               | Condition                                                        |
