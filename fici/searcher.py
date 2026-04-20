@@ -80,19 +80,34 @@ class CitationSearcher:
     def search(self, raw_citation: str) -> List[SearchHit]:
         """Return a list of candidate hits for ``raw_citation``.
 
-        Tries OpenAlex first; if it returns no hits OR errors, falls back to
-        Crossref. The returned list may be empty if neither backend resolves
-        the string.
+        Tries OpenAlex first; if it returns no hits (or errors), falls back
+        to Crossref. The returned list may be empty if neither backend
+        resolves the string.
+
+        Note: the :class:`FiCiPipeline` prefers calling
+        :meth:`search_openalex` and :meth:`search_crossref` separately so it
+        can consult Crossref whenever OpenAlex fails to **verify** (not just
+        when OpenAlex returns nothing). This method is kept for standalone
+        use.
         """
+        hits = self.search_openalex(raw_citation)
+        if hits:
+            return hits
+        logger.debug("OpenAlex returned no hits; falling back to Crossref.")
+        return self.search_crossref(raw_citation)
+
+    def search_openalex(self, raw_citation: str) -> List[SearchHit]:
+        """Search OpenAlex only. Returns [] if the query is empty or on error."""
         query = self._prepare_query(raw_citation)
         if not query:
             return []
+        return self._search_openalex(query)
 
-        hits = self._search_openalex(query)
-        if hits:
-            return hits
-
-        logger.debug("OpenAlex returned no hits; falling back to Crossref.")
+    def search_crossref(self, raw_citation: str) -> List[SearchHit]:
+        """Search Crossref only. Returns [] if the query is empty or on error."""
+        query = self._prepare_query(raw_citation)
+        if not query:
+            return []
         return self._search_crossref(query)
 
     # ------------------------------------------------------------------ #

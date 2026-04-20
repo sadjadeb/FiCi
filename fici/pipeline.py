@@ -110,24 +110,90 @@ class FiCiPipeline:
     def check_reference(self, raw_citation: str, *, index: int = 0) -> CitationReport:
         """Run search + verification on a single reference string.
 
-        Exceptions during the API search are caught and surfaced as an
-        ``ERROR`` verdict rather than propagating, so a single failing entry
-        doesn't abort an entire document scan. This method is safe to call
-        from worker threads.
+        Query strategy:
+
+        1. Query **OpenAlex** and run the verifier on its hits.
+        2. If the resulting verdict is ``VERIFIED``, return immediately —
+           OpenAlex's corpus is broader for CS papers and this saves an
+           unnecessary API round trip.
+        3. Otherwise query **Crossref** as a second opinion, verify again,
+           and return whichever of the two reports is stronger (``Verified``
+           beats anything else; within the same verdict tier the higher
+           score wins).
+        """
+        # --- Step 1: OpenAlex ---------------------------------------------
+        oa_report = self._verify_with_source(
+            raw_citation,
+            index=index,
+            source="openalex",
+            fetch=self.searcher.search_openalex,
+        )
+        if oa_report.verdict is Verdict.VERIFIED:
+            return oa_report
+
+        # --- Step 2: Crossref fallback on any non-Verified verdict --------
+        logger.debug(
+            "OpenAlex verdict for ref %d was %s (score=%.1f); consulting Crossref.",
+            index,
+            oa_report.verdict.value,
+            oa_report.score,
+        )
+        cr_report = self._verify_with_source(
+            raw_citation,
+            index=index,
+            source="crossref",
+            fetch=self.searcher.search_crossref,
+        )
+
+        return self._pick_better_report(oa_report, cr_report)
+
+    def _verify_with_source(
+        self,
+        raw_citation: str,
+        *,
+        index: int,
+        source: str,
+        fetch: Callable[[str], list],
+    ) -> CitationReport:
+        """Fetch hits from a single backend and run the verifier on them.
+
+        On backend error, returns a report whose verdict is ``ERROR`` so the
+        caller can still choose between sources.
         """
         try:
-            hits = self.searcher.search(raw_citation)
+            hits = fetch(raw_citation)
         except Exception as exc:  # pragma: no cover - defensive
-            logger.exception("Search failed for reference %d: %s", index, exc)
+            logger.exception("%s search failed for reference %d: %s", source, index, exc)
             return CitationReport(
                 index=index,
                 raw_text=raw_citation,
                 verdict=Verdict.ERROR,
                 score=0.0,
-                reason=f"Search backend raised: {exc!r}",
+                reason=f"{source} backend raised: {exc!r}",
+                source_used=source,
             )
-
         return self.verifier.verify(index, raw_citation, hits)
+
+    @staticmethod
+    def _pick_better_report(a: CitationReport, b: CitationReport) -> CitationReport:
+        """Return whichever of two reports represents a stronger conclusion.
+
+        Priority order:
+            1. ``VERIFIED`` always beats anything else.
+            2. A real verdict (``LIKELY_FAKE`` / ``SUSPICIOUS``) beats ``ERROR``.
+            3. Within the same tier, the higher score wins.
+        """
+        rank = {
+            Verdict.VERIFIED: 3,
+            Verdict.SUSPICIOUS: 2,
+            Verdict.LIKELY_FAKE: 1,
+            Verdict.ERROR: 0,
+        }
+        a_rank = rank.get(a.verdict, 0)
+        b_rank = rank.get(b.verdict, 0)
+        if a_rank != b_rank:
+            return a if a_rank > b_rank else b
+        return a if a.score >= b.score else b
 
     # ------------------------------------------------------------------ #
     # Execution strategies
@@ -196,31 +262,6 @@ class FiCiPipeline:
         requested = max(1, requested)
         # No point in spinning up more threads than there are references.
         return min(requested, max(1, total))
-
-    # ------------------------------------------------------------------ #
-    # Convenience helpers
-    # ------------------------------------------------------------------ #
-
-    def check_reference(self, raw_citation: str, *, index: int = 0) -> CitationReport:
-        """Run search + verification on a single reference string.
-
-        Exceptions during the API search are caught and surfaced as an
-        ``ERROR`` verdict rather than propagating, so a single failing entry
-        doesn't abort an entire document scan.
-        """
-        try:
-            hits = self.searcher.search(raw_citation)
-        except Exception as exc:  # pragma: no cover - defensive
-            logger.exception("Search failed for reference %d: %s", index, exc)
-            return CitationReport(
-                index=index,
-                raw_text=raw_citation,
-                verdict=Verdict.ERROR,
-                score=0.0,
-                reason=f"Search backend raised: {exc!r}",
-            )
-
-        return self.verifier.verify(index, raw_citation, hits)
 
     # ------------------------------------------------------------------ #
     # Convenience helpers
