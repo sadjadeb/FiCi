@@ -56,13 +56,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "--verify-threshold",
         type=float,
         default=90.0,
-        help="Score >= this is marked Verified (default: 90).",
-    )
-    parser.add_argument(
-        "--mismatch-threshold",
-        type=float,
-        default=80.0,
-        help="Score < this is marked Suspicious/Mismatch (default: 80).",
+        help=(
+            "Score >= this is marked Verified; anything below is "
+            "Suspicious/Mismatch (default: 90)."
+        ),
     )
     parser.add_argument(
         "--json",
@@ -162,7 +159,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         email=args.email,
         openalex_api_key=args.openalex_api_key,
         verify_threshold=args.verify_threshold,
-        mismatch_threshold=args.mismatch_threshold,
         max_workers=args.workers,
     )
 

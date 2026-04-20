@@ -12,7 +12,6 @@ class Verdict(str, Enum):
 
     VERIFIED = "Verified"
     SUSPICIOUS = "Suspicious/Mismatch"
-    LIKELY_FAKE = "Highly Likely Fake"
     ERROR = "Error"
 
 

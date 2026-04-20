@@ -30,8 +30,9 @@ class FiCiPipeline:
     email:
         Contact email used for the OpenAlex polite pool (and Crossref
         ``User-Agent``). Strongly recommended.
-    verify_threshold, mismatch_threshold:
-        Score cutoffs for the verdict classifier (see
+    verify_threshold:
+        Score cutoff for the verdict classifier — matches at or above this
+        value are marked ``Verified``, everything else ``Suspicious`` (see
         :class:`fici.verifier.CitationVerifier`).
     max_workers:
         Default number of concurrent API workers used by :meth:`run`. Set to
@@ -54,7 +55,6 @@ class FiCiPipeline:
         *,
         openalex_api_key: Optional[str] = None,
         verify_threshold: float = 90.0,
-        mismatch_threshold: float = 80.0,
         max_workers: int = _DEFAULT_MAX_WORKERS,
         extractor: Optional[ReferenceExtractor] = None,
         searcher: Optional[CitationSearcher] = None,
@@ -62,7 +62,7 @@ class FiCiPipeline:
     ) -> None:
         self.extractor = extractor or ReferenceExtractor()
         self.searcher = searcher or CitationSearcher(email=email, openalex_api_key=openalex_api_key)
-        self.verifier = verifier or CitationVerifier(verify_threshold=verify_threshold, mismatch_threshold=mismatch_threshold)
+        self.verifier = verifier or CitationVerifier(verify_threshold=verify_threshold)
         self.max_workers = max(1, int(max_workers))
 
     # ------------------------------------------------------------------ #
@@ -186,13 +186,12 @@ class FiCiPipeline:
 
         Priority order:
             1. ``VERIFIED`` always beats anything else.
-            2. A real verdict (``LIKELY_FAKE`` / ``SUSPICIOUS``) beats ``ERROR``.
+            2. A real verdict (``SUSPICIOUS``) beats ``ERROR``.
             3. Within the same tier, the higher score wins.
         """
         rank = {
-            Verdict.VERIFIED: 3,
-            Verdict.SUSPICIOUS: 2,
-            Verdict.LIKELY_FAKE: 1,
+            Verdict.VERIFIED: 2,
+            Verdict.SUSPICIOUS: 1,
             Verdict.ERROR: 0,
         }
         a_rank = rank.get(a.verdict, 0)

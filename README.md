@@ -70,18 +70,17 @@ The pipeline has four phases, each exposed as a standalone class:
 2. **Structuring + Search (primary)** (`CitationSearcher.search_openalex`): each raw citation is sent to the [OpenAlex](https://docs.openalex.org/) `/works` endpoint as a free-text query (title only, for precision), using the polite pool via `mailto`. The hits are then handed to the verifier.
 3. **Search (second opinion)** (`CitationSearcher.search_crossref`): whenever the OpenAlex-based verdict is anything other than `Verified` (suspicious match, no match, or error), FiCi also queries Crossref's `query.bibliographic` endpoint and verifies its hits.
 4. **Search (preprint fallback)** (`CitationSearcher.search_arxiv`): if Crossref also fails to verify, FiCi queries the [arXiv API](https://info.arxiv.org/help/api/index.html) with a title-scoped phrase query (`ti:"<title>"`). This catches preprints that neither OpenAlex nor Crossref have fully indexed. The pipeline then returns whichever of the (up to) three reports is strongest — `Verified` always beats other verdicts, and within the same tier the higher score wins. If any earlier backend verifies, the subsequent ones are skipped to save latency.
-5. **Verification** (`CitationVerifier`): `rapidfuzz.fuzz.token_sort_ratio` compares the API-returned title to the suspected title in the raw string, with a small bonus for corroborating author surnames. The pipeline emits one of four verdicts:
+5. **Verification** (`CitationVerifier`): `rapidfuzz.fuzz.token_sort_ratio` compares the API-returned title to the suspected title in the raw string, with a small bonus for corroborating author surnames. The pipeline emits one of three verdicts:
 
-   | Verdict               | Condition                                                        |
-   |-----------------------|------------------------------------------------------------------|
-   | `Verified`            | Score ≥ verify threshold (default **90**).                       |
-   | `Suspicious/Mismatch` | API found candidates but score < threshold (default **80–90**).  |
-   | `Highly Likely Fake`  | Neither API returned any results.                                |
-   | `Error`               | API call raised an unrecoverable exception.                      |
+   | Verdict               | Condition                                                                                                       |
+   |-----------------------|-----------------------------------------------------------------------------------------------------------------|
+   | `Verified`            | Score ≥ verify threshold (default **90**).                                                                      |
+   | `Suspicious/Mismatch` | Score below the verify threshold **or** none of OpenAlex / Crossref / arXiv returned any hits at all. Inspect `report.reason` to distinguish a low-score match from a no-hit "likely hallucinated" reference. |
+   | `Error`               | API call raised an unrecoverable exception.                                                                     |
 
 ## Tuning knobs
 
-- `FiCiPipeline(verify_threshold=90, mismatch_threshold=80)`: move the cutoffs up/down to trade precision for recall.
+- `FiCiPipeline(verify_threshold=90)`: single cutoff — scores at or above it are marked `Verified`, everything else `Suspicious/Mismatch`. Raise it for stricter verification, lower it for higher recall.
 - `FiCiPipeline(max_workers=4)`: API calls are dispatched concurrently via a thread pool (I/O-bound work). Default is **4**, which stays under the OpenAlex / Crossref polite-pool rate limits. Set to `1` to force sequential execution, or override per-call with `pipeline.run(pdf, max_workers=N)`.
 - `CitationSearcher(max_results=5, timeout=15, retries=2)`: control API politeness and robustness.
 - Inject a custom `ReferenceExtractor` subclass if you need to support a non-standard template (e.g. workshop-specific layouts).

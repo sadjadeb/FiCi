@@ -7,10 +7,12 @@ Scoring model (all values are 0-100):
     final_score  = min(100, title_score + author_bonus)
 
 Verdicts:
-    * "Highly Likely Fake"    -> no results from either API.
-    * "Suspicious/Mismatch"   -> results found but final_score < mismatch_threshold.
     * "Verified"              -> final_score >= verify_threshold.
-    * Scores between the two thresholds are treated as suspicious as well.
+    * "Suspicious/Mismatch"   -> either no results were returned from any
+                                 backend (likely hallucinated) or the best
+                                 match scored below ``verify_threshold``.
+    * "Error"                 -> a backend raised unexpectedly (surfaced by
+                                 the pipeline, not the verifier).
 """
 
 from __future__ import annotations
@@ -42,8 +44,7 @@ _FUZZ_PROCESSOR = utils.default_process
 class VerifierConfig:
     """Thresholds for verdict assignment."""
 
-    verify_threshold: float = 90.0     # >= this -> Verified
-    mismatch_threshold: float = 80.0   # < this -> Suspicious
+    verify_threshold: float = 90.0     # >= this -> Verified, otherwise Suspicious
     author_bonus_max: float = 10.0
 
 
@@ -54,12 +55,10 @@ class CitationVerifier:
         self,
         *,
         verify_threshold: float = 90.0,
-        mismatch_threshold: float = 80.0,
         author_bonus_max: float = 10.0,
     ) -> None:
         self.config = VerifierConfig(
             verify_threshold=verify_threshold,
-            mismatch_threshold=mismatch_threshold,
             author_bonus_max=author_bonus_max,
         )
 
@@ -80,9 +79,12 @@ class CitationVerifier:
                 index=index,
                 raw_text=raw_citation,
                 suspected_title=suspected_title,
-                verdict=Verdict.LIKELY_FAKE,
+                verdict=Verdict.SUSPICIOUS,
                 score=0.0,
-                reason="No results returned from OpenAlex or Crossref.",
+                reason=(
+                    "No results returned from OpenAlex, Crossref, or arXiv — "
+                    "the cited work is likely hallucinated or miscited."
+                ),
                 best_hit=None,
                 candidates_considered=0,
                 source_used=None,
@@ -190,13 +192,8 @@ class CitationVerifier:
             return Verdict.VERIFIED, (
                 f"Title similarity {score:.1f} ≥ {self.config.verify_threshold:.0f}."
             )
-        if score >= self.config.mismatch_threshold:
-            return Verdict.SUSPICIOUS, (
-                f"Borderline match: score {score:.1f} is between "
-                f"{self.config.mismatch_threshold:.0f} and {self.config.verify_threshold:.0f}."
-            )
         return Verdict.SUSPICIOUS, (
-            f"Low title similarity ({score:.1f} < {self.config.mismatch_threshold:.0f}); "
+            f"Low title similarity ({score:.1f} < {self.config.verify_threshold:.0f}); "
             "closest match appears to differ from the cited work."
         )
 
