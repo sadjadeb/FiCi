@@ -18,7 +18,7 @@ import sys
 from typing import List, Optional, Sequence
 
 from . import __version__
-from .models import CitationReport
+from .models import CitationReport, Verdict
 from .pipeline import FiCiPipeline
 
 
@@ -84,14 +84,47 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _best_hit_url(report: CitationReport) -> str:
+    """Return the most useful URL for the matched hit, or ``<no match>``."""
+    hit = report.best_hit
+    if hit is None:
+        return "<no match>"
+    if hit.id_url:
+        return hit.id_url
+    if hit.doi:
+        return f"https://doi.org/{hit.doi}"
+    return "<no link>"
+
+
+# Column width for the title field in progress output — truncated with an
+# ellipsis when longer, padded with spaces when shorter, so the ``url=``
+# column always lines up.
+_TITLE_COL_WIDTH = 80
+
+
+def _fixed_width(text: str, width: int) -> str:
+    """Truncate with ``…`` or right-pad so ``text`` occupies exactly ``width`` chars."""
+    if len(text) > width:
+        return text[: max(0, width - 1)] + "…"
+    return text.ljust(width)
+
+
 def _print_progress(done: int, total: int, report: CitationReport) -> None:
     # With concurrency, completion order != document order; print both the
     # completion counter and the original citation index.
+    title = _fixed_width(report.suspected_title or "<unknown>", _TITLE_COL_WIDTH)
+    # Only surface the source URL for verified matches — for suspicious /
+    # likely-fake / errored reports the "best hit" is by definition not
+    # trustworthy and printing its link would be misleading.
+    url_suffix = (
+        f"  url={_best_hit_url(report)}" if report.verdict is Verdict.VERIFIED else ""
+    )
     sys.stderr.write(
         f"[{done:>3}/{total}] ref#{report.index:<3} "
         f"{report.verdict.value:<22} "
         f"score={report.score:>5.1f}  "
-        f"title={(report.suspected_title or '<unknown>')[:80]}\n"
+        f"title={title}"
+        f"{url_suffix}\n"
     )
     sys.stderr.flush()
 
