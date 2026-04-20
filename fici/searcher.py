@@ -53,6 +53,7 @@ class SearcherConfig:
     """Configuration for the searcher (timeouts, retries, politeness)."""
 
     email: Optional[str] = None
+    openalex_api_key: Optional[str] = None
     user_agent: str = "FiCi/0.1 (+https://github.com/)"
     max_results: int = 5
     timeout: float = 15.0
@@ -70,12 +71,17 @@ class CitationSearcher:
         Contact email forwarded to OpenAlex (polite pool) and Crossref
         (``User-Agent`` header). Strongly recommended — without it both APIs
         apply stricter rate limits.
+    openalex_api_key:
+        Optional OpenAlex premium API key. When provided, it is sent as the
+        ``api_key`` query parameter on OpenAlex requests, bypassing the
+        polite-pool daily cap for users who have hit their limit.
     """
 
     def __init__(
         self,
         email: Optional[str] = None,
         *,
+        openalex_api_key: Optional[str] = None,
         max_results: int = 5,
         timeout: float = 15.0,
         retries: int = 2,
@@ -83,6 +89,7 @@ class CitationSearcher:
     ) -> None:
         self.config = SearcherConfig(
             email=email,
+            openalex_api_key=openalex_api_key,
             max_results=max_results,
             timeout=timeout,
             retries=retries,
@@ -172,6 +179,10 @@ class CitationSearcher:
         if self.config.email:
             # Polite pool: https://docs.openalex.org/how-to-use-the-api/rate-limits-and-authentication
             params["mailto"] = self.config.email
+        if self.config.openalex_api_key:
+            # Premium / authenticated access — raises the daily cap once the
+            # polite pool is exhausted.
+            params["api_key"] = self.config.openalex_api_key
 
         url = f"{OPENALEX_ENDPOINT}?{urlencode(params)}"
         data = self._request_json(url, source="openalex")

@@ -52,6 +52,7 @@ class FiCiPipeline:
         self,
         email: Optional[str] = None,
         *,
+        openalex_api_key: Optional[str] = None,
         verify_threshold: float = 90.0,
         mismatch_threshold: float = 80.0,
         max_workers: int = _DEFAULT_MAX_WORKERS,

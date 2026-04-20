@@ -38,6 +38,15 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Contact email for OpenAlex polite pool (strongly recommended).",
     )
     parser.add_argument(
+        "--openalex-api-key",
+        default=None,
+        help=(
+            "OpenAlex premium API key, forwarded as the `api_key` query "
+            "parameter. Use this once the polite-pool daily limit has been "
+            "reached."
+        ),
+    )
+    parser.add_argument(
         "--workers",
         type=int,
         default=4,
@@ -118,6 +127,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     pipeline = FiCiPipeline(
         email=args.email,
+        openalex_api_key=args.openalex_api_key,
         verify_threshold=args.verify_threshold,
         mismatch_threshold=args.mismatch_threshold,
         max_workers=args.workers,
