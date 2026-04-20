@@ -1,0 +1,60 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fici"
+version = "0.1.0"
+description = "FiCi: a lightweight detector for fake/hallucinated citations in scientific papers."
+readme = "README.md"
+requires-python = ">=3.9"
+license = "AGPL-3.0-only"
+license-files = ["LICENSE"]
+authors = [{ name = "Sajad Ebrahimi", email = "sadjadeb@gmail.com" }]
+keywords = [
+    "citations",
+    "hallucination",
+    "bibliography",
+    "openalex",
+    "crossref",
+    "pdf",
+    "academic"
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Scientific/Engineering :: Information Analysis",
+    "Topic :: Text Processing :: General",
+]
+dependencies = [
+    "PyMuPDF>=1.24.0",
+    "requests>=2.31.0",
+    "rapidfuzz>=3.6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "build>=1.2",
+    "twine>=5.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/sadjadeb/fici"
+Documentation = "https://github.com/sadjadeb/fici/blob/main/README.md"
+Repository = "https://github.com/sadjadeb/fici"
+Issues = "https://github.com/sadjadeb/fici/issues"
+
+[project.scripts]
+fici = "fici.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["fici*"]
