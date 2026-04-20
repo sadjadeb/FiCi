@@ -1,0 +1,240 @@
+"""Phase 1: Heuristic PDF reference extraction using PyMuPDF.
+
+Targets common conference layouts:
+    * NeurIPS / ICLR: single-column body, numeric bracketed references "[1]".
+    * ACM (acmart / SIG conf): two-column, numeric references "1." or "[1]".
+    * Some CS venues use plain Author-Year entries as a fallback style.
+
+The extractor operates in three stages:
+    1. Locate the "References"/"Bibliography" section header.
+    2. Collect the raw text of everything that follows it on subsequent pages,
+       trimming any trailing "Appendix"/"Supplementary" section if present.
+    3. Split the collected text into individual citation strings using a set
+       of prioritized regex splitters.
+"""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+from typing import Iterable, List, Optional, Tuple
+
+try:
+    import fitz  # PyMuPDF
+except ImportError as exc:  # pragma: no cover - import guard
+    raise ImportError(
+        "PyMuPDF is required for PDF extraction. Install it via `pip install PyMuPDF`."
+    ) from exc
+
+
+# Headers that typically mark the start of the bibliography.
+_REFERENCE_HEADER_PATTERNS: Tuple[re.Pattern, ...] = (
+    re.compile(r"^\s*references\s*$", re.IGNORECASE),
+    re.compile(r"^\s*bibliography\s*$", re.IGNORECASE),
+    re.compile(r"^\s*references\s+and\s+notes\s*$", re.IGNORECASE),
+    # Numbered section like "7 References" or "7. References".
+    re.compile(r"^\s*\d+\.?\s+references\s*$", re.IGNORECASE),
+    re.compile(r"^\s*\d+\.?\s+bibliography\s*$", re.IGNORECASE),
+)
+
+# Sections that typically follow the bibliography and should be excluded.
+_POST_REFERENCE_STOP_PATTERNS: Tuple[re.Pattern, ...] = (
+    re.compile(r"^\s*appendix(?:\s+[a-z])?\s*$", re.IGNORECASE),
+    re.compile(r"^\s*supplementary(?:\s+material)?\s*$", re.IGNORECASE),
+    re.compile(r"^\s*a\s+appendix\s*$", re.IGNORECASE),
+    re.compile(r"^\s*checklist\s*$", re.IGNORECASE),
+)
+
+# Primary splitter: bracketed numeric references like "[1]", "[12]".
+_BRACKETED_NUM_SPLIT = re.compile(r"(?m)(?=^\s*\[\s*\d{1,3}\s*\]\s+)")
+
+# Secondary splitter: "1." / "12." at the start of a line, used by many ACM/SIG
+# conf templates. We require a following space and a capital letter to avoid
+# breaking on things like "1.5 MB" inside a citation.
+_DOTTED_NUM_SPLIT = re.compile(r"(?m)(?=^\s*\d{1,3}\.\s+[A-Z])")
+
+# Fallback splitter: author-year style references. Each entry usually starts
+# with a capitalized surname, possibly with initials, followed by a comma or
+# period and more authors/title. This is inherently fuzzy.
+_AUTHOR_YEAR_SPLIT = re.compile(
+    r"(?m)(?=^\s*[A-Z][A-Za-z'\-]+(?:,\s+[A-Z]\.|,\s+[A-Z][A-Za-z'\-]+|\s+et\s+al\.?))"
+)
+
+# Minimum viable citation length — anything shorter is almost certainly noise.
+_MIN_CITATION_LEN = 25
+
+
+class ReferenceExtractor:
+    """Extract individual raw citation strings from a PDF's bibliography.
+
+    Example:
+        extractor = ReferenceExtractor()
+        refs = extractor.extract("paper.pdf")
+    """
+
+    def __init__(
+        self,
+        min_citation_length: int = _MIN_CITATION_LEN,
+        max_citation_length: int = 1200,
+    ) -> None:
+        self.min_citation_length = min_citation_length
+        self.max_citation_length = max_citation_length
+
+    # ------------------------------------------------------------------ #
+    # Public API
+    # ------------------------------------------------------------------ #
+    def extract(self, pdf_path: str | Path) -> List[str]:
+        """Extract a list of raw citation strings from ``pdf_path``.
+
+        Returns an empty list if no References section can be located.
+        """
+        pdf_path = Path(pdf_path)
+        if not pdf_path.exists():
+            raise FileNotFoundError(f"PDF not found: {pdf_path}")
+
+        raw_bib = self._extract_bibliography_text(pdf_path)
+        if not raw_bib:
+            return []
+
+        return self._split_into_citations(raw_bib)
+
+    # ------------------------------------------------------------------ #
+    # Stage 1 & 2: locate the bibliography and collect its text
+    # ------------------------------------------------------------------ #
+    def _extract_bibliography_text(self, pdf_path: Path) -> str:
+        """Return the raw text of the bibliography section, or empty string."""
+        with fitz.open(pdf_path) as doc:
+            # Pull per-page plain text preserving line breaks.
+            pages: List[str] = [page.get_text("text") for page in doc]
+
+        start_page, start_line = self._find_reference_header(pages)
+        if start_page is None:
+            return ""
+
+        collected: List[str] = []
+        for page_idx in range(start_page, len(pages)):
+            page_text = pages[page_idx]
+            lines = page_text.splitlines()
+
+            # On the first page, skip everything up to and including the header.
+            begin = start_line + 1 if page_idx == start_page else 0
+
+            for i in range(begin, len(lines)):
+                if self._is_post_reference_stop(lines[i]):
+                    # Hit an appendix/supplementary boundary — stop collecting.
+                    return "\n".join(collected).strip()
+                collected.append(lines[i])
+
+        return "\n".join(collected).strip()
+
+    @staticmethod
+    def _find_reference_header(pages: List[str]) -> Tuple[Optional[int], int]:
+        """Locate the last "References"/"Bibliography" header.
+
+        We prefer the LAST occurrence in the document because body text can
+        occasionally contain phrases like "see the references" in earlier
+        pages, whereas the actual section header is late in the paper.
+        """
+        last: Tuple[Optional[int], int] = (None, -1)
+        for page_idx, page_text in enumerate(pages):
+            for line_idx, line in enumerate(page_text.splitlines()):
+                stripped = line.strip()
+                if not stripped or len(stripped) > 40:
+                    continue
+                if any(pat.match(stripped) for pat in _REFERENCE_HEADER_PATTERNS):
+                    last = (page_idx, line_idx)
+        return last
+
+    @staticmethod
+    def _is_post_reference_stop(line: str) -> bool:
+        stripped = line.strip()
+        if not stripped or len(stripped) > 40:
+            return False
+        return any(pat.match(stripped) for pat in _POST_REFERENCE_STOP_PATTERNS)
+
+    # ------------------------------------------------------------------ #
+    # Stage 3: split the raw bibliography text into individual entries
+    # ------------------------------------------------------------------ #
+    def _split_into_citations(self, raw_text: str) -> List[str]:
+        """Try splitters in order of specificity until one yields >= 3 entries."""
+        normalized = self._normalize_whitespace(raw_text)
+
+        for splitter in (
+            self._split_bracketed_numbers,
+            self._split_dotted_numbers,
+            self._split_author_year,
+        ):
+            entries = splitter(normalized)
+            entries = self._postprocess_entries(entries)
+            if len(entries) >= 3:
+                return entries
+
+        # Last resort: return whatever the most permissive splitter produced,
+        # even if it's short — better than nothing for small reference lists.
+        fallback = self._postprocess_entries(self._split_author_year(normalized))
+        return fallback
+
+    @staticmethod
+    def _normalize_whitespace(text: str) -> str:
+        """Collapse soft wraps while keeping hard line breaks between entries.
+
+        PyMuPDF preserves the PDF's line-breaks. References often wrap mid
+        citation, so we join intra-entry wraps but keep blank lines and lines
+        that look like the start of a new reference marker.
+        """
+        # De-hyphenate words split across lines: "informa-\ntion" -> "information".
+        text = re.sub(r"([A-Za-z])-\n([A-Za-z])", r"\1\2", text)
+
+        out_lines: List[str] = []
+        for line in text.split("\n"):
+            if not line.strip():
+                out_lines.append("")  # preserve blank separators
+                continue
+            out_lines.append(line.rstrip())
+
+        # Rejoin continuation lines: a line that doesn't look like a new entry
+        # marker should be appended to the previous non-empty line.
+        merged: List[str] = []
+        new_entry_markers = (
+            re.compile(r"^\s*\[\s*\d{1,3}\s*\]\s+"),
+            re.compile(r"^\s*\d{1,3}\.\s+[A-Z]"),
+        )
+        for line in out_lines:
+            if not line:
+                merged.append("")
+                continue
+            starts_new = any(m.match(line) for m in new_entry_markers)
+            if starts_new or not merged or not merged[-1]:
+                merged.append(line)
+            else:
+                merged[-1] = f"{merged[-1]} {line.lstrip()}"
+
+        return "\n".join(merged)
+
+    @staticmethod
+    def _split_bracketed_numbers(text: str) -> List[str]:
+        chunks = _BRACKETED_NUM_SPLIT.split(text)
+        return [c for c in chunks if re.match(r"^\s*\[\s*\d{1,3}\s*\]", c)]
+
+    @staticmethod
+    def _split_dotted_numbers(text: str) -> List[str]:
+        chunks = _DOTTED_NUM_SPLIT.split(text)
+        return [c for c in chunks if re.match(r"^\s*\d{1,3}\.\s+[A-Z]", c)]
+
+    @staticmethod
+    def _split_author_year(text: str) -> List[str]:
+        chunks = _AUTHOR_YEAR_SPLIT.split(text)
+        return [c for c in chunks if c.strip()]
+
+    def _postprocess_entries(self, entries: Iterable[str]) -> List[str]:
+        cleaned: List[str] = []
+        for entry in entries:
+            normalized = re.sub(r"\s+", " ", entry).strip()
+            if not normalized:
+                continue
+            if len(normalized) < self.min_citation_length:
+                continue
+            if len(normalized) > self.max_citation_length:
+                normalized = normalized[: self.max_citation_length].rstrip()
+            cleaned.append(normalized)
+        return cleaned
