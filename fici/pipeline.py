@@ -112,40 +112,48 @@ class FiCiPipeline:
 
         Query strategy:
 
-        1. Query **OpenAlex** and run the verifier on its hits.
-        2. If the resulting verdict is ``VERIFIED``, return immediately —
-           OpenAlex's corpus is broader for CS papers and this saves an
-           unnecessary API round trip.
-        3. Otherwise query **Crossref** as a second opinion, verify again,
-           and return whichever of the two reports is stronger (``Verified``
-           beats anything else; within the same verdict tier the higher
-           score wins).
+        1. **OpenAlex** — broadest CS coverage, polite-pool access.
+        2. **Crossref** — strong DOI / bibliographic coverage; catches
+           published papers OpenAlex may have indexed poorly.
+        3. **arXiv**    — preprints that neither of the above may have
+           ingested yet.
+
+        After each step we run the verifier. If the verdict is ``Verified``
+        we return immediately; otherwise we advance to the next backend and
+        finally return whichever report across all three is strongest
+        (``Verified`` beats anything else; within the same tier the higher
+        score wins).
+
+        Exceptions during any individual backend call are caught inside
+        :meth:`_verify_with_source` and surface as ``ERROR`` verdicts, so a
+        single failing reference never aborts the full scan.
         """
-        # --- Step 1: OpenAlex ---------------------------------------------
-        oa_report = self._verify_with_source(
-            raw_citation,
-            index=index,
-            source="openalex",
-            fetch=self.searcher.search_openalex,
-        )
-        if oa_report.verdict is Verdict.VERIFIED:
-            return oa_report
+        reports: List[CitationReport] = []
 
-        # --- Step 2: Crossref fallback on any non-Verified verdict --------
-        logger.debug(
-            "OpenAlex verdict for ref %d was %s (score=%.1f); consulting Crossref.",
-            index,
-            oa_report.verdict.value,
-            oa_report.score,
-        )
-        cr_report = self._verify_with_source(
-            raw_citation,
-            index=index,
-            source="crossref",
-            fetch=self.searcher.search_crossref,
-        )
+        for source, fetch in (
+            ("openalex", self.searcher.search_openalex),
+            ("crossref", self.searcher.search_crossref),
+            ("arxiv", self.searcher.search_arxiv),
+        ):
+            report = self._verify_with_source(
+                raw_citation,
+                index=index,
+                source=source,
+                fetch=fetch,
+            )
+            if report.verdict is Verdict.VERIFIED:
+                return report
+            reports.append(report)
+            logger.debug(
+                "%s verdict for ref %d was %s (score=%.1f); escalating.",
+                source, index, report.verdict.value, report.score,
+            )
 
-        return self._pick_better_report(oa_report, cr_report)
+        # None of the three backends verified — return the strongest report.
+        best = reports[0]
+        for r in reports[1:]:
+            best = self._pick_better_report(best, r)
+        return best
 
     def _verify_with_source(
         self,

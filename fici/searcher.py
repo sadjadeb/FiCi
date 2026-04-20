@@ -1,18 +1,21 @@
 """Phases 2 & 3: structure a raw citation and search external databases.
 
-Primary backend: OpenAlex (https://api.openalex.org/works).
-Fallback:        Crossref bibliographic query (https://api.crossref.org/works).
+Primary backend:        OpenAlex  (https://api.openalex.org/works).
+Secondary backend:      Crossref  (https://api.crossref.org/works).
+Tertiary backend:       arXiv     (http://export.arxiv.org/api/query).
 
-Both APIs accept the raw citation string as a free-text query, which lets us
-avoid a structured-parse dependency (e.g. ``anystyle``). We do apply a small
-amount of pre-processing to strip leading enumeration markers like ``[12]``
-and trailing URLs that hurt retrieval quality.
+All three APIs accept the extracted title as a free-text query, which lets
+us avoid a structured-parse dependency (e.g. ``anystyle``). We strip
+leading enumeration markers like ``[12]`` and trailing URLs/DOIs before
+querying, and extract the paper title when possible so the search isn't
+polluted by author names or venue strings.
 """
 
 from __future__ import annotations
 
 import logging
 import time
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from typing import List, Optional
 from urllib.parse import urlencode
@@ -27,10 +30,22 @@ logger = logging.getLogger(__name__)
 
 OPENALEX_ENDPOINT = "https://api.openalex.org/works"
 CROSSREF_ENDPOINT = "https://api.crossref.org/works"
+ARXIV_ENDPOINT = "http://export.arxiv.org/api/query"
 
-# Upper bound on the query length sent to either API. OpenAlex in particular
+# Upper bound on the query length sent to each API. OpenAlex in particular
 # penalises very long `search` strings.
 _MAX_QUERY_LEN = 300
+
+# arXiv asks clients to wait ~3 seconds between requests. Because arXiv is a
+# third-tier fallback that only fires for already-unverified citations, we use
+# a smaller sleep but still larger than the default 100 ms per-worker pause.
+_ARXIV_REQUEST_SLEEP = 1.0
+
+# Atom / arXiv XML namespaces.
+_ARXIV_NAMESPACES = {
+    "atom": "http://www.w3.org/2005/Atom",
+    "arxiv": "http://arxiv.org/schemas/atom",
+}
 
 
 @dataclass
@@ -80,21 +95,24 @@ class CitationSearcher:
     def search(self, raw_citation: str) -> List[SearchHit]:
         """Return a list of candidate hits for ``raw_citation``.
 
-        Tries OpenAlex first; if it returns no hits (or errors), falls back
-        to Crossref. The returned list may be empty if neither backend
-        resolves the string.
+        Tries OpenAlex first; if it returns no hits (or errors) falls back
+        to Crossref, then to arXiv. The returned list may be empty if none
+        of the backends resolves the string.
 
-        Note: the :class:`FiCiPipeline` prefers calling
-        :meth:`search_openalex` and :meth:`search_crossref` separately so it
-        can consult Crossref whenever OpenAlex fails to **verify** (not just
-        when OpenAlex returns nothing). This method is kept for standalone
-        use.
+        Note: the :class:`FiCiPipeline` prefers calling the per-source
+        ``search_*`` methods separately so it can escalate only when a
+        backend fails to **verify** (not just when it returns nothing).
+        This method is kept for standalone use.
         """
         hits = self.search_openalex(raw_citation)
         if hits:
             return hits
         logger.debug("OpenAlex returned no hits; falling back to Crossref.")
-        return self.search_crossref(raw_citation)
+        hits = self.search_crossref(raw_citation)
+        if hits:
+            return hits
+        logger.debug("Crossref returned no hits; falling back to arXiv.")
+        return self.search_arxiv(raw_citation)
 
     def search_openalex(self, raw_citation: str) -> List[SearchHit]:
         """Search OpenAlex only. Returns [] if the query is empty or on error."""
@@ -109,6 +127,13 @@ class CitationSearcher:
         if not query:
             return []
         return self._search_crossref(query)
+
+    def search_arxiv(self, raw_citation: str) -> List[SearchHit]:
+        """Search arXiv only. Returns [] if the query is empty or on error."""
+        query = self._prepare_query(raw_citation)
+        if not query:
+            return []
+        return self._search_arxiv(query)
 
     # ------------------------------------------------------------------ #
     # Query normalization
@@ -242,28 +267,129 @@ class CitationSearcher:
         )
 
     # ------------------------------------------------------------------ #
-    # HTTP helper
+    # arXiv backend
+    # ------------------------------------------------------------------ #
+    def _search_arxiv(self, query: str) -> List[SearchHit]:
+        # arXiv supports field-prefixed queries; we scope to titles so author
+        # names and abstracts don't pollute ranking. The title itself is
+        # wrapped in double quotes to request a phrase match; arXiv gracefully
+        # degrades to a token search if the exact phrase isn't present.
+        sanitized = query.replace('"', "")
+        search_query = f'ti:"{sanitized}"'
+        params = {
+            "search_query": search_query,
+            "max_results": str(self.config.max_results),
+        }
+        url = f"{ARXIV_ENDPOINT}?{urlencode(params)}"
+
+        resp = self._request_response(
+            url,
+            source="arxiv",
+            accept="application/atom+xml",
+            request_sleep=_ARXIV_REQUEST_SLEEP,
+        )
+        if resp is None:
+            return []
+
+        try:
+            root = ET.fromstring(resp.text)
+        except ET.ParseError as exc:
+            logger.warning("arxiv returned malformed XML: %s", exc)
+            return []
+
+        entries = root.findall("atom:entry", _ARXIV_NAMESPACES)
+        return [self._arxiv_to_hit(e) for e in entries]
+
+    @staticmethod
+    def _arxiv_to_hit(entry: ET.Element) -> SearchHit:
+        ns = _ARXIV_NAMESPACES
+
+        title_el = entry.find("atom:title", ns)
+        title = " ".join(title_el.text.split()) if title_el is not None and title_el.text else None
+
+        authors: List[str] = []
+        for a in entry.findall("atom:author", ns):
+            name_el = a.find("atom:name", ns)
+            if name_el is not None and name_el.text:
+                authors.append(name_el.text.strip())
+
+        year = None
+        published = entry.find("atom:published", ns)
+        if published is not None and published.text and len(published.text) >= 4:
+            try:
+                year = int(published.text[:4])
+            except ValueError:
+                year = None
+
+        doi_el = entry.find("arxiv:doi", ns)
+        doi = doi_el.text.strip() if doi_el is not None and doi_el.text else None
+
+        id_el = entry.find("atom:id", ns)
+        id_url = id_el.text.strip() if id_el is not None and id_el.text else None
+
+        return SearchHit(
+            source="arxiv",
+            title=title,
+            authors=authors,
+            year=year,
+            doi=doi,
+            venue="arXiv",
+            id_url=id_url,
+            raw={"xml": ET.tostring(entry, encoding="unicode")},
+        )
+
+    # ------------------------------------------------------------------ #
+    # HTTP helpers
     # ------------------------------------------------------------------ #
     def _request_json(self, url: str, *, source: str) -> Optional[dict]:
-        headers = {"Accept": "application/json", "User-Agent": self._user_agent()}
+        resp = self._request_response(url, source=source, accept="application/json")
+        if resp is None:
+            return None
+        try:
+            return resp.json()
+        except ValueError as exc:
+            logger.warning("%s returned non-JSON body: %s", source, exc)
+            return None
+
+    def _request_response(
+        self,
+        url: str,
+        *,
+        source: str,
+        accept: str = "application/json",
+        request_sleep: Optional[float] = None,
+    ) -> Optional[requests.Response]:
+        """Execute a GET with retry/backoff, returning the Response or None.
+
+        Parameters
+        ----------
+        request_sleep:
+            Per-call override for the post-success politeness sleep. When
+            ``None`` the searcher's configured ``request_sleep`` is used.
+        """
+        headers = {"Accept": accept, "User-Agent": self._user_agent()}
+        sleep_after = self.config.request_sleep if request_sleep is None else request_sleep
         last_exc: Optional[Exception] = None
         for attempt in range(self.config.retries + 1):
             try:
                 resp = self._session.get(url, headers=headers, timeout=self.config.timeout)
-                # 429/5xx are retryable; 4xx (other) indicates a bad query.
+                # 429/5xx are retryable; other 4xx statuses indicate a bad query.
                 if resp.status_code == 429 or 500 <= resp.status_code < 600:
                     raise requests.HTTPError(f"{resp.status_code} {resp.reason}")
                 if resp.status_code >= 400:
                     logger.warning("%s returned HTTP %s for query.", source, resp.status_code)
                     return None
-                if self.config.request_sleep:
-                    time.sleep(self.config.request_sleep)
-                return resp.json()
-            except (requests.RequestException, ValueError) as exc:
+                if sleep_after:
+                    time.sleep(sleep_after)
+                return resp
+            except requests.RequestException as exc:
                 last_exc = exc
                 if attempt < self.config.retries:
                     sleep_for = self.config.backoff ** attempt
-                    logger.debug("%s attempt %d failed (%s); retrying in %.1fs", source, attempt + 1, exc, sleep_for)
+                    logger.debug(
+                        "%s attempt %d failed (%s); retrying in %.1fs",
+                        source, attempt + 1, exc, sleep_for,
+                    )
                     time.sleep(sleep_for)
                     continue
                 logger.warning("%s request failed after %d attempts: %s", source, attempt + 1, exc)

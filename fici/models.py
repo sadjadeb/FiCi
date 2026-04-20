@@ -20,7 +20,7 @@ class Verdict(str, Enum):
 class SearchHit:
     """Normalized representation of a single result from OpenAlex or Crossref."""
 
-    source: str  # "openalex" or "crossref"
+    source: str  # "openalex", "crossref", or "arxiv"
     title: Optional[str] = None
     authors: List[str] = field(default_factory=list)
     year: Optional[int] = None
@@ -42,7 +42,7 @@ class CitationReport:
     reason: str = ""
     best_hit: Optional[SearchHit] = None
     candidates_considered: int = 0
-    source_used: Optional[str] = None  # "openalex" / "crossref" / None
+    source_used: Optional[str] = None  # "openalex" / "crossref" / "arxiv" / None
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize to a JSON-friendly dictionary."""
