@@ -18,7 +18,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
-from rapidfuzz import fuzz
+from rapidfuzz import fuzz, utils
 
 from ._parsing import LEADING_MARKER, extract_suspected_title
 from .models import CitationReport, SearchHit, Verdict
@@ -28,6 +28,14 @@ from .models import CitationReport, SearchHit, Verdict
 # contribute to scoring. Short, generic titles ("Introduction", "Results")
 # would otherwise false-match almost any API response.
 _PARTIAL_RATIO_MIN_LEN = 20
+
+# Preprocessor applied to every rapidfuzz comparison. ``default_process``
+# lowercases, replaces non-alphanumeric characters with spaces, and strips
+# whitespace. This is important because OpenAlex/Crossref sometimes return
+# titles in ALL CAPS, with curly quotes, or with differing punctuation
+# (e.g. trailing periods, em-dashes) compared to the cited form, and the
+# raw rapidfuzz ratios are case- and punctuation-sensitive.
+_FUZZ_PROCESSOR = utils.default_process
 
 
 @dataclass
@@ -127,13 +135,15 @@ class CitationVerifier:
             title_vs_suspected = 0.0
             if suspected_title:
                 scores = [
-                    fuzz.token_sort_ratio(hit.title, suspected_title),
-                    fuzz.token_set_ratio(hit.title, suspected_title),
+                    fuzz.token_sort_ratio(hit.title, suspected_title, processor=_FUZZ_PROCESSOR),
+                    fuzz.token_set_ratio(hit.title, suspected_title, processor=_FUZZ_PROCESSOR),
                 ]
                 if min(len(hit.title), len(suspected_title)) >= _PARTIAL_RATIO_MIN_LEN:
-                    scores.append(fuzz.partial_ratio(hit.title, suspected_title))
+                    scores.append(
+                        fuzz.partial_ratio(hit.title, suspected_title, processor=_FUZZ_PROCESSOR)
+                    )
                 title_vs_suspected = max(scores)
-            title_vs_raw = fuzz.token_set_ratio(hit.title, cleaned_raw)
+            title_vs_raw = fuzz.token_set_ratio(hit.title, cleaned_raw, processor=_FUZZ_PROCESSOR)
             title_score = max(title_vs_suspected, title_vs_raw)
 
             # Secondary signal: does any API author surname appear in the raw
