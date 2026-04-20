@@ -74,14 +74,14 @@ The pipeline has four phases, each exposed as a standalone class:
 
    | Verdict               | Condition                                                        |
    |-----------------------|------------------------------------------------------------------|
-   | `Verified`            | Score ≥ verify threshold (default **85**).                       |
-   | `Suspicious/Mismatch` | API found candidates but score < threshold (default **75–85**).  |
+   | `Verified`            | Score ≥ verify threshold (default **90**).                       |
+   | `Suspicious/Mismatch` | API found candidates but score < threshold (default **80–90**).  |
    | `Highly Likely Fake`  | Neither API returned any results.                                |
    | `Error`               | API call raised an unrecoverable exception.                      |
 
 ## Tuning knobs
 
-- `FiCiPipeline(verify_threshold=85, mismatch_threshold=75)`: move the cutoffs up/down to trade precision for recall.
+- `FiCiPipeline(verify_threshold=90, mismatch_threshold=80)`: move the cutoffs up/down to trade precision for recall.
 - `FiCiPipeline(max_workers=4)`: API calls are dispatched concurrently via a thread pool (I/O-bound work). Default is **4**, which stays under the OpenAlex / Crossref polite-pool rate limits. Set to `1` to force sequential execution, or override per-call with `pipeline.run(pdf, max_workers=N)`.
 - `CitationSearcher(max_results=5, timeout=15, retries=2)`: control API politeness and robustness.
 - Inject a custom `ReferenceExtractor` subclass if you need to support a non-standard template (e.g. workshop-specific layouts).

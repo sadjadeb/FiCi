@@ -42,8 +42,8 @@ _FUZZ_PROCESSOR = utils.default_process
 class VerifierConfig:
     """Thresholds for verdict assignment."""
 
-    verify_threshold: float = 85.0     # >= this -> Verified
-    mismatch_threshold: float = 75.0   # < this -> Suspicious
+    verify_threshold: float = 90.0     # >= this -> Verified
+    mismatch_threshold: float = 80.0   # < this -> Suspicious
     author_bonus_max: float = 10.0
 
 
@@ -53,8 +53,8 @@ class CitationVerifier:
     def __init__(
         self,
         *,
-        verify_threshold: float = 85.0,
-        mismatch_threshold: float = 75.0,
+        verify_threshold: float = 90.0,
+        mismatch_threshold: float = 80.0,
         author_bonus_max: float = 10.0,
     ) -> None:
         self.config = VerifierConfig(

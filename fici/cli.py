@@ -46,14 +46,14 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--verify-threshold",
         type=float,
-        default=85.0,
-        help="Score >= this is marked Verified (default: 85).",
+        default=90.0,
+        help="Score >= this is marked Verified (default: 90).",
     )
     parser.add_argument(
         "--mismatch-threshold",
         type=float,
-        default=75.0,
-        help="Score < this is marked Suspicious/Mismatch (default: 75).",
+        default=80.0,
+        help="Score < this is marked Suspicious/Mismatch (default: 80).",
     )
     parser.add_argument(
         "--json",

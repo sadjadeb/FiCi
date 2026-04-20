@@ -52,19 +52,16 @@ class FiCiPipeline:
         self,
         email: Optional[str] = None,
         *,
-        verify_threshold: float = 85.0,
-        mismatch_threshold: float = 75.0,
+        verify_threshold: float = 90.0,
+        mismatch_threshold: float = 80.0,
         max_workers: int = _DEFAULT_MAX_WORKERS,
         extractor: Optional[ReferenceExtractor] = None,
         searcher: Optional[CitationSearcher] = None,
         verifier: Optional[CitationVerifier] = None,
     ) -> None:
         self.extractor = extractor or ReferenceExtractor()
-        self.searcher = searcher or CitationSearcher(email=email)
-        self.verifier = verifier or CitationVerifier(
-            verify_threshold=verify_threshold,
-            mismatch_threshold=mismatch_threshold,
-        )
+        self.searcher = searcher or CitationSearcher(email=email, openalex_api_key=openalex_api_key)
+        self.verifier = verifier or CitationVerifier(verify_threshold=verify_threshold, mismatch_threshold=mismatch_threshold)
         self.max_workers = max(1, int(max_workers))
 
     # ------------------------------------------------------------------ #
