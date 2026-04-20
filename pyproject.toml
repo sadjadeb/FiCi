@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fici"
-version = "0.1.0"
+version = "0.1.1"
 description = "FiCi: a lightweight detector for fake/hallucinated citations in scientific papers."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -36,7 +36,7 @@ classifiers = [
     "Topic :: Text Processing :: General",
 ]
 dependencies = [
-    "PyMuPDF>=1.24.0",
+    "PyMuPDF==1.27.2.2",
     "requests>=2.31.0",
     "rapidfuzz>=3.6.0",
 ]
