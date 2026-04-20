@@ -33,6 +33,11 @@ _VENUE_PREFIXES = (
     "arxiv",
 )
 
+# Trailing "(2022)" / "(2022a)" style year markers that slip into the title
+# segment when a citation omits a period before the year parenthesis
+# (common in Springer LNCS entries: "...Title (2022)").
+_TRAILING_YEAR_PAREN = re.compile(r"\s*\(\s*(?:19|20)\d{2}[a-z]?\s*\)\s*$")
+
 # Minimum/maximum lengths for a plausible title.
 _MIN_TITLE_LEN = 8
 _MAX_TITLE_LEN = 250
@@ -166,6 +171,10 @@ def _cleanup(candidate: str) -> str:
     text = candidate.strip().strip(",;:").strip()
     if not text:
         return ""
+
+    # Drop a trailing "(YYYY)" that slipped in from the end of the citation
+    # when the title segment wasn't period-terminated.
+    text = _TRAILING_YEAR_PAREN.sub("", text).strip().strip(",;:").strip()
 
     # Drop a leading "In " that commonly precedes the venue in ACM entries —
     # it shouldn't show up in a title but does occasionally when the heuristic
