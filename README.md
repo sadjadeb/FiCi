@@ -29,11 +29,14 @@ fici paper.pdf --email you@example.org
 Useful flags:
 
 ```bash
-fici paper.pdf --email you@example.org --workers 8        # more concurrency
-fici paper.pdf --email you@example.org --json > out.json  # machine-readable
-fici paper.pdf --email you@example.org --quiet            # summary only
+fici paper.pdf --email you@example.org --workers 8          # more concurrency
+fici paper.pdf --email you@example.org --json > out.json    # machine-readable stdout
+fici paper.pdf --email you@example.org --save-output         # Markdown report in cwd
+fici paper.pdf --email you@example.org --quiet              # summary only
 fici --help
 ```
+
+`--save-output` writes a Markdown report to the **current working directory** as `paper-fici-YYYYMMDD-HHMMSS.md` (using the PDF file’s basename and a local timestamp). It is written **in addition** to normal stdout, so you can combine it with `--quiet` or `--json` freely. Use `--json` when you need machine-readable output; `--save-output` is for the human-readable report file only.
 
 The CLI returns a non-zero exit code if any citation is flagged, which makes it easy to drop into CI pipelines:
 
@@ -89,3 +92,9 @@ The pipeline has four phases, each exposed as a standalone class:
 
 - Title extraction from raw strings is heuristic; unusual punctuation or missing years can occasionally yield an incomplete `suspected_title`, which is why scoring also consults the full raw string.
 - Author matching uses surname containment rather than a structured parse. If you'd like structured parsing via `anystyle` or GROBID, that's a clean extension point on `CitationSearcher._prepare_query`.
+
+
+## Todo
+
+- [ ] Add batch mode to the CLI to process multiple PDFs at once.
+- [x] Add option to save the Markdown report to a file (`--save-output`).
