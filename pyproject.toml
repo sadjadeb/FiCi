@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fici"
-version = "0.1.1"
+version = "0.1.2"
 description = "FiCi: a lightweight detector for fake/hallucinated citations in scientific papers."
 readme = "README.md"
 requires-python = ">=3.9"
