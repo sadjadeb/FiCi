@@ -15,6 +15,8 @@ import argparse
 import json
 import logging
 import sys
+from datetime import datetime
+from pathlib import Path
 from typing import List, Optional, Sequence
 
 from . import __version__
@@ -65,6 +67,15 @@ def _build_parser() -> argparse.ArgumentParser:
         "--json",
         action="store_true",
         help="Emit full reports as JSON on stdout (disables progress output).",
+    )
+    parser.add_argument(
+        "--save-output",
+        action="store_true",
+        help=(
+            "After the run, write a Markdown report to the current working "
+            "directory as <pdf-basename>-fici-<timestamp>.md (timestamp is "
+            "YYYYMMDD-HHMMSS local time). Written in addition to stdout."
+        ),
     )
     parser.add_argument(
         "-q",
@@ -140,6 +151,79 @@ def _print_human_summary(reports: List[CitationReport]) -> None:
             print(f"  [{r.index}] {r.verdict.value} (score={r.score}): {snippet}")
 
 
+def _build_md_report(reports: List[CitationReport], pdf_path: str) -> str:
+    """Render *reports* as a Markdown document and return the string."""
+    summary = FiCiPipeline.summarize(reports)
+    total = summary.pop("total")
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    lines: List[str] = []
+    lines.append(f"# FiCi Citation Report")
+    lines.append(f"")
+    lines.append(f"**File:** `{pdf_path}`  ")
+    lines.append(f"**Generated:** {timestamp}  ")
+    lines.append(f"**Total references:** {total}")
+    lines.append(f"")
+
+    lines.append("## Summary")
+    lines.append("")
+    lines.append("| Verdict | Count |")
+    lines.append("|---------|------:|")
+    for label, count in summary.items():
+        lines.append(f"| {label} | {count} |")
+    lines.append("")
+
+    lines.append("## All References")
+    lines.append("")
+    lines.append("| # | Verdict | Score | Source | Title | URL |")
+    lines.append("|--:|---------|------:|--------|-------|-----|")
+    for r in reports:
+        title = (r.suspected_title or r.raw_text[:80]).replace("|", "\\|")
+        source = r.source_used or "—"
+        # Only surface URLs for verified matches — same rule as progress output.
+        if r.verdict is Verdict.VERIFIED:
+            url = _best_hit_url(r)
+            url_cell = f"[link]({url})" if url.startswith("http") else url
+        else:
+            url_cell = "—"
+        lines.append(
+            f"| {r.index} | {r.verdict.value} | {r.score:.1f} | {source} | {title} | {url_cell} |"
+        )
+    lines.append("")
+
+    flagged = [r for r in reports if r.verdict is not Verdict.VERIFIED]
+    if flagged:
+        lines.append("## Flagged Citations")
+        lines.append("")
+        for r in flagged:
+            lines.append(f"### [{r.index}] {r.verdict.value} (score={r.score:.1f})")
+            lines.append("")
+            lines.append(f"> {r.raw_text}")
+            lines.append("")
+            if r.reason:
+                lines.append(f"**Reason:** {r.reason}")
+                lines.append("")
+            url = _best_hit_url(r)
+            if url.startswith("http"):
+                lines.append(f"**Closest match:** {url}")
+                lines.append("")
+
+    return "\n".join(lines)
+
+
+def _default_md_report_path(pdf_path: str) -> Path:
+    """Return ``<cwd>/<stem>-fici-<YYYYMMDD-HHMMSS>.md`` for *pdf_path*."""
+    stem = Path(pdf_path).resolve().stem or "report"
+    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+    return Path.cwd() / f"{stem}-fici-{ts}.md"
+
+
+def _save_md_report(reports: List[CitationReport], path: Path, pdf_path: str) -> None:
+    """Write the Markdown report to *path*."""
+    path.write_text(_build_md_report(reports, pdf_path), encoding="utf-8")
+    sys.stderr.write(f"fici: report saved to {path.resolve()}\n")
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     """Entry point for ``fici`` console script.
 
@@ -178,6 +262,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         sys.stdout.write("\n")
     else:
         _print_human_summary(reports)
+
+    if args.save_output:
+        _save_md_report(reports, _default_md_report_path(args.pdf), args.pdf)
 
     any_flagged = any(r.verdict.value != "Verified" for r in reports)
     return 1 if any_flagged else 0
