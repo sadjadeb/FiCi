@@ -64,6 +64,61 @@ _AUTHOR_YEAR_SPLIT = re.compile(
 _MIN_CITATION_LEN = 25
 
 
+# ---------------------------------------------------------------------- #
+# Line-end hyphenation
+# ---------------------------------------------------------------------- #
+# Common compound-word prefixes. When one of these appears as the LEFT
+# fragment of a line-end hyphen the hyphen is almost certainly real
+# ("self-\nsupervised", "pre-\ntrained") rather than a typesetter soft-wrap.
+_COMPOUND_LEFT = frozenset({
+    "pre", "post", "non", "self", "semi", "sub", "super", "multi",
+    "cross", "anti", "meta", "inter", "intra", "bi", "tri", "uni",
+    "mid", "mini", "micro", "macro", "quasi", "neo", "auto", "ultra",
+    "hyper", "co", "re",
+})
+# Common particles that form the RIGHT fragment of a hyphenated compound
+# ("state-of-\nthe-art", "end-\nto-end", "Text-\nto-Text").
+_COMPOUND_RIGHT = frozenset({
+    "of", "to", "the", "by", "in", "on", "as", "up", "off",
+    "end", "art", "out", "all", "one",
+})
+
+# Pattern for a line-end hyphen with fully alphabetic fragments on both
+# sides — exactly the shape that can be either a soft wrap or a real
+# hyphen. ``[^\W\d_]`` matches any Unicode letter (including accented
+# glyphs like "í" in "Martínez") but excludes digits and underscores.
+_EOL_HYPHEN_RE = re.compile(r"([^\W\d_]+)-\n([^\W\d_]+)", re.UNICODE)
+
+
+def _dehyphenate_line_breaks(text: str) -> str:
+    """Resolve line-end hyphenation without mangling real hyphens.
+
+    Drops the hyphen when it looks like a typesetter soft-wrap
+    ("informa-\\ntion" -> "information") but preserves it (and rejoins the
+    fragments into a single token) when any of the following hold:
+
+    * the fragment after the hyphen starts with an uppercase letter —
+      proper noun / compound name, e.g. "Fei-\\nFei", "Meta-\\nLearning";
+    * the fragment before the hyphen is a known compound prefix such as
+      ``pre``, ``self``, ``multi``, ``cross`` — e.g. "self-\\nsupervised";
+    * the fragment after the hyphen is a known compound particle such as
+      ``of``, ``to``, ``the``, ``end`` — e.g. "state-of-\\nthe-art".
+
+    When in doubt we keep the hyphen, because a spurious hyphen (``infor-
+    mation``) is tolerated by the downstream fuzzy matcher whereas a
+    missing hyphen (``FeiFei``) breaks tokenization for the API search.
+    """
+    def _resolve(match: "re.Match[str]") -> str:
+        left, right = match.group(1), match.group(2)
+        keep_hyphen = (
+            right[0].isupper()
+            or left.lower() in _COMPOUND_LEFT
+            or right.lower() in _COMPOUND_RIGHT
+        )
+        return f"{left}-{right}" if keep_hyphen else f"{left}{right}"
+    return _EOL_HYPHEN_RE.sub(_resolve, text)
+
+
 class ReferenceExtractor:
     """Extract individual raw citation strings from a PDF's bibliography.
 
@@ -182,8 +237,10 @@ class ReferenceExtractor:
         citation, so we join intra-entry wraps but keep blank lines and lines
         that look like the start of a new reference marker.
         """
-        # De-hyphenate words split across lines: "informa-\ntion" -> "information".
-        text = re.sub(r"([A-Za-z])-\n([A-Za-z])", r"\1\2", text)
+        # Resolve hyphens at line ends: drop for typesetter soft-wraps
+        # ("informa-\ntion" -> "information") but preserve for real hyphens
+        # in compound names / prefixes ("Fei-\nFei" -> "Fei-Fei").
+        text = _dehyphenate_line_breaks(text)
 
         out_lines: List[str] = []
         for line in text.split("\n"):
