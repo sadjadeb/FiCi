@@ -98,3 +98,11 @@ The pipeline has four phases, each exposed as a standalone class:
 
 - [ ] Add batch mode to the CLI to process multiple PDFs at once.
 - [x] Add option to save the Markdown report to a file (`--save-output`).
+- [ ] Add support for other templates (e.g. COLM, ACL, etc.).
+- [ ] Add method to use doi directly to check if the paper is real.
+- [ ] Add support for direct url to the paper as input.
+- [ ] Add support for .bib file as input.
+- [ ] Add support for single citation as input.
+- [ ] Set up the package on HF space.
+- [ ] Add Github Actions to the package.
+- [ ] Add Github page for the package.
