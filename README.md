@@ -1,10 +1,10 @@
 # FiCi
 
-**FiCi** (*Fictitious Citations*) is a lightweight Python package for detecting fabricated or hallucinated citations in scientific PDFs. It's tuned for standard single-/double-column conference layouts (NeurIPS, ICLR, ACM `acmart` / SIG conf) and avoids LLMs or heavy ML models.
+**FiCi** (*Fictitious Citations*) is a lightweight Python package for detecting fabricated or hallucinated citations in scientific PDFs (local or via URL) and BibTeX bibliographies. It's tuned for standard single-/double-column conference layouts (NeurIPS, ICLR, ACM `acmart` / SIG conf) and avoids LLMs or heavy ML models.
 
 ## Install
 
-From PyPI:
+Via pip:
 
 ```bash
 pip install fici
@@ -23,16 +23,28 @@ pip install -e ".[dev]"
 Installing the package registers a `fici` console script:
 
 ```bash
-fici paper.pdf --email you@example.org
+fici paper.pdf
+fici references.bib                       # BibTeX source as input
+fici thesis.bbl                           # .bbl is also accepted
+fici citations.txt                        # bullet/line list of citations
+fici https://arxiv.org/pdf/2604.24071v1   # PDF over HTTP(s)
 ```
+
+The input is dispatched by type:
+
+* a **local file** uses its extension — `.pdf` goes through PyMuPDF + the heuristic reference-section splitter, `.bib` / `.bbl` use the built-in BibTeX parser (no extra dependency), and `.txt` is parsed as a bullet- or dash-prefixed list (or a flat one-per-line file) for ad-hoc citations pasted from Word, Google Docs, or Markdown notes.
+* an **`http(s)://` URL** is downloaded to a temporary PDF and processed with the standard PDF path. arXiv landing-page URLs (`arxiv.org/abs/<id>`) are auto-normalised to the matching `/pdf/<id>.pdf`. HTML responses, network errors, and oversize payloads are reported with a clean message and a non-zero exit code rather than a traceback.
+
+All paths produce the same per-citation `CitationReport`, so every flag below works regardless of input type.
 
 Useful flags:
 
 ```bash
-fici paper.pdf --email you@example.org --workers 8          # more concurrency
-fici paper.pdf --email you@example.org --json > out.json    # machine-readable stdout
-fici paper.pdf --email you@example.org --save-output         # Markdown report in cwd
-fici paper.pdf --email you@example.org --quiet              # summary only
+fici paper.pdf --email you@example.org    # polite pool email
+fici paper.pdf --workers 8                # more concurrency
+fici paper.pdf --json > out.json          # machine-readable stdout
+fici paper.pdf --save-output              # Markdown report in cwd
+fici paper.pdf --quiet                    # summary only
 fici --help
 ```
 
@@ -54,12 +66,21 @@ The CLI returns a non-zero exit code if any citation is flagged, which makes it 
 from fici import FiCiPipeline
 
 pipeline = FiCiPipeline(email="you@example.org")  # polite pool
-reports = pipeline.run("paper.pdf")
+reports = pipeline.run("paper.pdf")          # or "references.bib" / "thesis.bbl"
 
 for r in reports:
     print(r.index, r.verdict.value, round(r.score, 1), r.suspected_title)
 
 print(FiCiPipeline.summarize(reports))
+```
+
+If you only want to load BibTeX into citation strings without running the rest of the pipeline:
+
+```python
+from fici import parse_bibtex_file
+
+for citation in parse_bibtex_file("references.bib"):
+    print(citation)
 ```
 
 See [`example.py`](./example.py) for a complete programmatic usage example.
@@ -69,7 +90,7 @@ See [`example.py`](./example.py) for a complete programmatic usage example.
 
 The pipeline has four phases, each exposed as a standalone class:
 
-1. **Extraction** (`ReferenceExtractor`): PyMuPDF pulls text, heuristics locate the *References* / *Bibliography* section, and regex splitters handle the dominant reference styles (`[1] ...`, `1. ...`, Author-Year).
+1. **Extraction** (`ReferenceExtractor`): the extractor dispatches by input type. An `http(s)://` URL is downloaded to a temporary PDF (with arXiv landing-page normalisation, Content-Type sniffing to reject HTML, and an upper byte-size cap). For local `.pdf` files, PyMuPDF pulls text, heuristics locate the *References* / *Bibliography* section, and regex splitters handle the dominant reference styles (`[1] ...`, `1. ...`, Author-Year). For `.bib` / `.bbl`, the built-in BibTeX parser walks `@entry{...}` blocks (with brace-balanced field parsing and LaTeX-accent decoding) and renders each entry into the same `Authors (Year). Title. Venue.` shape that PDF extraction produces. For `.txt`, the file is parsed as a bullet/dash-prefixed list (or a flat one-per-line file), with continuation lines folded into the preceding entry so wrapped citations survive intact. All paths feed the same downstream search/verify pipeline.
 2. **Structuring + Search (primary)** (`CitationSearcher.search_openalex`): each raw citation is sent to the [OpenAlex](https://docs.openalex.org/) `/works` endpoint as a free-text query (title only, for precision), using the polite pool via `mailto`. The hits are then handed to the verifier.
 3. **Search (second opinion)** (`CitationSearcher.search_crossref`): whenever the OpenAlex-based verdict is anything other than `Verified` (suspicious match, no match, or error), FiCi also queries Crossref's `query.bibliographic` endpoint and verifies its hits.
 4. **Search (preprint fallback)** (`CitationSearcher.search_arxiv`): if Crossref also fails to verify, FiCi queries the [arXiv API](https://info.arxiv.org/help/api/index.html) with a title-scoped phrase query (`ti:"<title>"`). This catches preprints that neither OpenAlex nor Crossref have fully indexed. The pipeline then returns whichever of the (up to) three reports is strongest — `Verified` always beats other verdicts, and within the same tier the higher score wins. If any earlier backend verifies, the subsequent ones are skipped to save latency.
@@ -94,15 +115,13 @@ The pipeline has four phases, each exposed as a standalone class:
 - Author matching uses surname containment rather than a structured parse. If you'd like structured parsing via `anystyle` or GROBID, that's a clean extension point on `CitationSearcher._prepare_query`.
 
 
-## Todo
+## Incoming features
 
-- [ ] Add batch mode to the CLI to process multiple PDFs at once.
-- [x] Add option to save the Markdown report to a file (`--save-output`).
-- [ ] Add support for other templates (e.g. COLM, ACL, etc.).
-- [ ] Add method to use doi directly to check if the paper is real.
-- [ ] Add support for direct url to the paper as input.
-- [ ] Add support for .bib file as input.
-- [ ] Add support for single citation as input.
-- [ ] Set up the package on HF space.
-- [ ] Add Github Actions to the package.
-- [ ] Add Github page for the package.
+- [x] Save the Markdown report to a file (`--save-output`).
+- [ ] Batch mode to the CLI to process multiple PDFs at once.
+- [ ] Support for other templates (e.g. COLM, ACL, etc.).
+- [x] Support for direct url to the paper as input.
+- [x] Support for .bib file as input.
+- [ ] HF space of the package.
+- [ ] Github Actions for the package.
+- [ ] Github page for the package.
