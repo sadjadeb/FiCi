@@ -14,10 +14,14 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Sequence
+from urllib.parse import urlparse
+
+import requests
 
 from . import __version__
 from .models import CitationReport, Verdict
@@ -37,8 +41,9 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "input",
         help=(
-            "Input file: a paper PDF, a BibTeX source (.bib / .bbl), or a "
-            "plain-text bullet/line list (.txt). Dispatched by extension."
+            "Input: a paper PDF, a BibTeX source (.bib / .bbl), a "
+            "plain-text bullet/line list (.txt), or an http(s) URL to a "
+            "PDF on the web (e.g. an arXiv link)."
         ),
     )
     parser.add_argument(
@@ -218,9 +223,18 @@ def _build_md_report(reports: List[CitationReport], pdf_path: str) -> str:
     return "\n".join(lines)
 
 
-def _default_md_report_path(pdf_path: str) -> Path:
-    """Return ``<cwd>/<stem>-fici-<YYYYMMDD-HHMMSS>.md`` for *pdf_path*."""
-    stem = Path(pdf_path).resolve().stem or "report"
+def _default_md_report_path(input_ref: str) -> Path:
+    """Return ``<cwd>/<stem>-fici-<YYYYMMDD-HHMMSS>.md`` for *input_ref*.
+
+    ``input_ref`` may be a local path or an ``http(s)://`` URL; in the
+    URL case the basename of the URL path (sans query/fragment) is used
+    as the report stem.
+    """
+    if re.match(r"^https?://", input_ref, re.IGNORECASE):
+        url_path = urlparse(input_ref).path
+        stem = Path(url_path).stem or "report"
+    else:
+        stem = Path(input_ref).resolve().stem or "report"
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
     return Path.cwd() / f"{stem}-fici-{ts}.md"
 
@@ -259,6 +273,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         reports = pipeline.run(args.input, progress=progress_cb)
     except FileNotFoundError as exc:
         sys.stderr.write(f"fici: {exc}\n")
+        return 2
+    except (requests.RequestException, ValueError) as exc:
+        # Surface clean errors for URL fetches (network failures, HTML
+        # landing pages, oversize downloads) without a raw traceback.
+        sys.stderr.write(f"fici: failed to load input: {exc}\n")
         return 2
     except Exception as exc:  # pragma: no cover - defensive top-level guard
         sys.stderr.write(f"fici: unexpected error: {exc!r}\n")

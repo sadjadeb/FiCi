@@ -15,9 +15,15 @@ The extractor operates in three stages:
 
 from __future__ import annotations
 
+import logging
+import os
 import re
+import tempfile
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterable, List, Optional, Tuple
+from typing import Iterable, Iterator, List, Optional, Tuple
+
+import requests
 
 try:
     import fitz  # PyMuPDF
@@ -25,6 +31,92 @@ except ImportError as exc:  # pragma: no cover - import guard
     raise ImportError(
         "PyMuPDF is required for PDF extraction. Install it via `pip install PyMuPDF`."
     ) from exc
+
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------- #
+# URL input support
+# ---------------------------------------------------------------------- #
+_URL_RE = re.compile(r"^https?://", re.IGNORECASE)
+
+# arXiv landing pages serve HTML, but the matching ``/pdf/<id>`` URL
+# returns the PDF. Normalise so users can paste either.
+_ARXIV_ABS_RE = re.compile(r"^(https?://(?:www\.)?arxiv\.org)/abs/([^?#]+)", re.IGNORECASE)
+
+# Friendly default for the urlretrieve User-Agent — some hosts (notably
+# Cloudflare-fronted publisher pages) reject the bare ``python-requests``
+# string. Reusing the searcher's identifier keeps the pipeline's outbound
+# fingerprint consistent.
+_HTTP_USER_AGENT = "FiCi/0.1 (+https://github.com/)"
+
+# Cap downloaded payloads to a generous-but-finite size to protect against
+# accidental redirects to a giant file or a misconfigured server returning
+# a stream of zeros.
+_MAX_PDF_DOWNLOAD_BYTES = 100 * 1024 * 1024  # 100 MB
+
+
+def _looks_like_url(value: str) -> bool:
+    return bool(_URL_RE.match(value))
+
+
+def _normalize_pdf_url(url: str) -> str:
+    """Map known landing-page URLs to their direct PDF equivalent."""
+    m = _ARXIV_ABS_RE.match(url)
+    if m:
+        base, arxiv_id = m.group(1), m.group(2).rstrip("/")
+        # Strip a version suffix only if it's malformed; ``2205.01833v2``
+        # is a valid PDF identifier and should be preserved.
+        return f"{base}/pdf/{arxiv_id}.pdf"
+    return url
+
+
+@contextmanager
+def _download_pdf_to_tempfile(url: str, *, timeout: float = 60.0) -> Iterator[Path]:
+    """Stream ``url`` to a temporary ``.pdf`` and yield the path.
+
+    The file is removed when the context exits, regardless of outcome.
+    """
+    fetch_url = _normalize_pdf_url(url)
+    if fetch_url != url:
+        logger.info("Normalised arXiv landing URL %s -> %s", url, fetch_url)
+
+    headers = {"User-Agent": _HTTP_USER_AGENT, "Accept": "application/pdf,*/*;q=0.8"}
+    fd, tmp_path = tempfile.mkstemp(suffix=".pdf", prefix="fici-")
+    os.close(fd)
+    tmp = Path(tmp_path)
+    try:
+        logger.info("Downloading PDF from %s", fetch_url)
+        with requests.get(fetch_url, headers=headers, stream=True, timeout=timeout) as resp:
+            resp.raise_for_status()
+            ctype = (resp.headers.get("Content-Type") or "").lower()
+            if "html" in ctype:
+                # Detect landing pages early — the user almost certainly
+                # meant to point at the underlying PDF.
+                raise ValueError(
+                    f"URL returned HTML (Content-Type: {ctype!r}); "
+                    "expected a PDF. If this is a landing page, link to "
+                    "the direct PDF URL instead."
+                )
+            written = 0
+            with tmp.open("wb") as fh:
+                for chunk in resp.iter_content(chunk_size=64 * 1024):
+                    if not chunk:
+                        continue
+                    written += len(chunk)
+                    if written > _MAX_PDF_DOWNLOAD_BYTES:
+                        raise ValueError(
+                            f"PDF download exceeded {_MAX_PDF_DOWNLOAD_BYTES} bytes; aborting."
+                        )
+                    fh.write(chunk)
+        logger.info("Downloaded %d bytes to %s", written, tmp)
+        yield tmp
+    finally:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:  # pragma: no cover - best-effort cleanup
+            pass
 
 
 # Headers that typically mark the start of the bibliography.
@@ -252,10 +344,25 @@ class ReferenceExtractor:
         """Extract a list of raw citation strings from ``input_path``.
 
         Returns an empty list if no entries can be located. ``input_path``
-        may be a PDF, a ``.bib`` / ``.bbl`` BibTeX file, or a ``.txt``
-        bullet/line list of citations.
+        could be:
+
+        * a path to a PDF on disk,
+        * a path to a ``.bib`` / ``.bbl`` BibTeX file,
+        * a path to a ``.txt`` bullet/line list of citations, or
+        * an ``http(s)://`` URL pointing to a PDF on the web (e.g. an
+          arXiv ``/pdf/`` link). Landing-page URLs like
+          ``arxiv.org/abs/<id>`` are normalised to their PDF equivalent
+          automatically.
         """
-        path = Path(input_path)
+        if isinstance(input_path, str) and _looks_like_url(input_path):
+            with _download_pdf_to_tempfile(input_path) as tmp_path:
+                return self._extract_from_local_path(tmp_path)
+        return self._extract_from_local_path(Path(input_path))
+
+    # ------------------------------------------------------------------ #
+    # Local-path dispatch (factored out so the URL path can reuse it).
+    # ------------------------------------------------------------------ #
+    def _extract_from_local_path(self, path: Path) -> List[str]:
         if not path.exists():
             raise FileNotFoundError(f"Input file not found: {path}")
 
