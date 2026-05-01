@@ -165,12 +165,12 @@ def _build_md_report(reports: List[CitationReport], pdf_path: str) -> str:
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     lines: List[str] = []
-    lines.append(f"# FiCi Citation Report")
-    lines.append(f"")
+    lines.append("# FiCi Citation Report")
+    lines.append("")
     lines.append(f"**File:** `{pdf_path}`  ")
     lines.append(f"**Generated:** {timestamp}  ")
     lines.append(f"**Total references:** {total}")
-    lines.append(f"")
+    lines.append("")
 
     lines.append("## Summary")
     lines.append("")
