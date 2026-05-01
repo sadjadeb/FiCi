@@ -65,6 +65,93 @@ _MIN_CITATION_LEN = 25
 
 
 # ---------------------------------------------------------------------- #
+# Plain-text bullet-list parsing (.txt input)
+# ---------------------------------------------------------------------- #
+# Characters that commonly mark the start of a citation in a bullet- or
+# dash-prefixed list. ASCII first, then the various Unicode bullets and
+# dashes that survive a copy/paste from Word, Google Docs, or Markdown.
+_TEXT_BULLET_PREFIXES: Tuple[str, ...] = (
+    "•", "●", "◦", "‣", "▪", "■", "□", "◾",
+    "*", "+", ">",
+    "—", "–", "-",
+)
+
+
+def parse_text_entries(raw_text: str) -> List[str]:
+    """Parse a plain-text bullet list (or one-per-line file) into citations.
+
+    Two source styles are recognised automatically:
+
+    * **Bulleted** — the user's example, where each citation begins with
+      a bullet character (``•``, ``*``, ``-`` …). Unmarked lines that
+      follow are folded into the current entry so that wrapped citations
+      survive intact.
+    * **Flat**    — no bullets anywhere in the file. Each non-empty line
+      is taken as a single citation.
+
+    Leading enumeration markers like ``[12]`` or ``12.`` are *not*
+    stripped here — they're handled downstream by
+    :func:`fici._parsing.strip_markers`, just as for PDF-extracted
+    citations.
+    """
+    if raw_text.startswith("\ufeff"):
+        raw_text = raw_text[1:]
+
+    lines = raw_text.splitlines()
+    has_bullets = any(_starts_with_bullet(line) for line in lines)
+
+    entries: List[str] = []
+    current: List[str] = []
+
+    def _flush() -> None:
+        if current:
+            joined = " ".join(current).strip()
+            if joined:
+                entries.append(joined)
+            current.clear()
+
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            _flush()
+            continue
+
+        if not has_bullets:
+            _flush()
+            current.append(stripped)
+            continue
+
+        unmarked = _strip_bullet(stripped)
+        if unmarked is not None:
+            _flush()
+            if unmarked:
+                current.append(unmarked)
+        elif current:
+            current.append(stripped)
+        else:
+            current.append(stripped)
+
+    _flush()
+    return entries
+
+
+def _starts_with_bullet(line: str) -> bool:
+    return _strip_bullet(line.lstrip()) is not None
+
+
+def _strip_bullet(stripped_line: str) -> Optional[str]:
+    """Return the line with its leading bullet removed, or ``None`` if absent."""
+    for marker in _TEXT_BULLET_PREFIXES:
+        if stripped_line.startswith(marker):
+            rest = stripped_line[len(marker):]
+            # Require whitespace (or end of line) after the marker so we
+            # don't mistake "-x" inside a token for a list bullet.
+            if not rest or rest[0] in (" ", "\t", "\u00a0"):
+                return rest.lstrip(" \t\u00a0")
+    return None
+
+
+# ---------------------------------------------------------------------- #
 # Line-end hyphenation
 # ---------------------------------------------------------------------- #
 # Common compound-word prefixes. When one of these appears as the LEFT
@@ -120,12 +207,35 @@ def _dehyphenate_line_breaks(text: str) -> str:
 
 
 class ReferenceExtractor:
-    """Extract individual raw citation strings from a PDF's bibliography.
+    """Extract individual raw citation strings from a PDF, BibTeX, or text file.
+
+    The extractor dispatches by file extension:
+
+    * ``.pdf``            — locate the References section and split it
+      into individual entries with the heuristic regex pipeline below.
+    * ``.bib`` / ``.bbl`` — parse BibTeX ``@entry{...}`` blocks via
+      :mod:`fici.bibtex` and render each into a free-text citation
+      string, mirroring the shape of PDF-extracted entries so the rest
+      of the pipeline runs unchanged.
+    * ``.txt``            — parse a bullet-/dash-prefixed list (or a
+      flat one-per-line file) where each non-empty entry is treated as
+      a single raw citation. Useful for ad-hoc lists pasted from
+      Word / Google Docs / Markdown notes.
 
     Example:
         extractor = ReferenceExtractor()
         refs = extractor.extract("paper.pdf")
+        refs = extractor.extract("references.bib")
+        refs = extractor.extract("citations.txt")
     """
+
+    # File extensions handled by the BibTeX path. ``.bbl`` is included
+    # because users sometimes paste raw BibTeX into a ``.bbl`` file even
+    # though that's technically the LaTeX-formatted bibliography output;
+    # we let the parser decide and degrade gracefully if it sees nothing
+    # parseable.
+    _BIBTEX_EXTENSIONS = frozenset({".bib", ".bbl"})
+    _TEXT_EXTENSIONS = frozenset({".txt"})
 
     def __init__(
         self,
@@ -138,16 +248,29 @@ class ReferenceExtractor:
     # ------------------------------------------------------------------ #
     # Public API
     # ------------------------------------------------------------------ #
-    def extract(self, pdf_path: str | Path) -> List[str]:
-        """Extract a list of raw citation strings from ``pdf_path``.
+    def extract(self, input_path: str | Path) -> List[str]:
+        """Extract a list of raw citation strings from ``input_path``.
 
-        Returns an empty list if no References section can be located.
+        Returns an empty list if no entries can be located. ``input_path``
+        may be a PDF, a ``.bib`` / ``.bbl`` BibTeX file, or a ``.txt``
+        bullet/line list of citations.
         """
-        pdf_path = Path(pdf_path)
-        if not pdf_path.exists():
-            raise FileNotFoundError(f"PDF not found: {pdf_path}")
+        path = Path(input_path)
+        if not path.exists():
+            raise FileNotFoundError(f"Input file not found: {path}")
 
-        raw_bib = self._extract_bibliography_text(pdf_path)
+        suffix = path.suffix.lower()
+        if suffix in self._BIBTEX_EXTENSIONS:
+            from .bibtex import parse_bibtex_file
+            entries = parse_bibtex_file(path)
+            return self._postprocess_entries(entries)
+
+        if suffix in self._TEXT_EXTENSIONS:
+            raw_text = path.read_text(encoding="utf-8", errors="replace")
+            entries = parse_text_entries(raw_text)
+            return self._postprocess_entries(entries)
+
+        raw_bib = self._extract_bibliography_text(path)
         if not raw_bib:
             return []
 

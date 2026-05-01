@@ -70,17 +70,20 @@ class FiCiPipeline:
     # ------------------------------------------------------------------ #
     def run(
         self,
-        pdf_path: str | Path,
+        input_path: str | Path,
         *,
         progress: Optional[Callable[[int, int, CitationReport], None]] = None,
         max_workers: Optional[int] = None,
     ) -> List[CitationReport]:
-        """Execute the full pipeline against ``pdf_path``.
+        """Execute the full pipeline against ``input_path``.
 
         Parameters
         ----------
-        pdf_path:
-            Path to the PDF on disk.
+        input_path:
+            Path to a PDF or to a BibTeX bibliography (``.bib`` /
+            ``.bbl``). The :class:`ReferenceExtractor` dispatches on the
+            file extension; the rest of the pipeline is identical for
+            both inputs.
         progress:
             Optional callback ``(completed_count, total, report)`` invoked
             after each citation is verified. With concurrency enabled the
@@ -95,9 +98,9 @@ class FiCiPipeline:
         list[CitationReport]
             One report per extracted citation, in document order.
         """
-        references = self.extractor.extract(pdf_path)
+        references = self.extractor.extract(input_path)
         total = len(references)
-        logger.info("Extracted %d candidate references from %s", total, pdf_path)
+        logger.info("Extracted %d candidate references from %s", total, input_path)
 
         workers = self._resolve_workers(max_workers, total)
 

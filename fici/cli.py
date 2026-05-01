@@ -28,12 +28,19 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="fici",
         description=(
-            "FiCi: detect fake/hallucinated citations in a scientific PDF. "
-            "Extracts the bibliography, queries OpenAlex (with Crossref as a "
-            "fallback), and scores each reference with rapidfuzz."
+            "FiCi: detect fake/hallucinated citations in a scientific PDF "
+            "or BibTeX bibliography. Extracts the references, queries "
+            "OpenAlex (with Crossref / arXiv / Semantic Scholar fallbacks), "
+            "and scores each entry with rapidfuzz."
         ),
     )
-    parser.add_argument("pdf", help="Path to the paper PDF.")
+    parser.add_argument(
+        "input",
+        help=(
+            "Input file: a paper PDF, a BibTeX source (.bib / .bbl), or a "
+            "plain-text bullet/line list (.txt). Dispatched by extension."
+        ),
+    )
     parser.add_argument(
         "--email",
         default=None,
@@ -249,7 +256,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     progress_cb = None if (args.quiet or args.json) else _print_progress
 
     try:
-        reports = pipeline.run(args.pdf, progress=progress_cb)
+        reports = pipeline.run(args.input, progress=progress_cb)
     except FileNotFoundError as exc:
         sys.stderr.write(f"fici: {exc}\n")
         return 2
@@ -264,7 +271,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         _print_human_summary(reports)
 
     if args.save_output:
-        _save_md_report(reports, _default_md_report_path(args.pdf), args.pdf)
+        _save_md_report(reports, _default_md_report_path(args.input), args.input)
 
     any_flagged = any(r.verdict.value != "Verified" for r in reports)
     return 1 if any_flagged else 0
